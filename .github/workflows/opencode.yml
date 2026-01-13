@@ -24,6 +24,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Configure git
         run: |
@@ -35,5 +36,7 @@ jobs:
         env:
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_AUTHORIZATION_BEARER: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: main
         with:
           model: zai-coding-plan/glm-4.7
