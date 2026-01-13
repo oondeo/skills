@@ -1,23 +1,47 @@
 # Managing Conversation Index
 
-Index, archive, and maintain conversations for search.
+Index, archive, and maintain conversations from multiple sources for search.
+
+## Data Sources
+
+The search tool supports four data sources:
+
+1. **Claude Code conversations** - Requires indexing (see below)
+2. **OpenCode sessions** - Automatically loaded, no setup required
+3. **Goose sessions** - Automatically loaded, no setup required
+4. **Memos API** - Requires MCP configuration (see Memos Setup section)
 
 ## Quick Start
 
+### Claude Code Conversations
+
 **Install auto-indexing hook:**
 ```bash
-~/.claude/skills/collaboration/remembering-conversations/tool/install-hook
+cd ~/.claude/skills/collaboration/remembering-conversations/tool
+./install-hook
 ```
 
 **Index all conversations:**
 ```bash
-~/.claude/skills/collaboration/remembering-conversations/tool/index-conversations
+./index-conversations
 ```
 
-**Process unindexed only:**
-```bash
-~/.claude/skills/collaboration/remembering-conversations/tool/index-conversations --cleanup
-```
+### OpenCode Sessions
+
+No setup required. Sessions are automatically loaded from:
+- `~/.local/share/opencode/storage/session/` (session metadata)
+- `~/.local/share/opencode/storage/message/` (message content)
+
+**Note:** OpenCode message format varies by version. Content extraction is implemented for standard formats, but some sessions may not have extractable content. Results may be empty for some OpenCode sessions.
+
+### Goose Sessions
+
+No setup required. Sessions are automatically loaded from:
+- `~/.local/share/goose/sessions/` (JSONL format)
+
+### Memos API
+
+Requires memos-api-mcp configuration. OpenCode sessions are automatically saved to Memos when configured.
 
 ## Features
 
@@ -26,10 +50,11 @@ Index, archive, and maintain conversations for search.
 - **AI summaries** (Claude Haiku with Sonnet fallback)
 - **Recovery modes** (verify, repair, rebuild)
 - **Permanent archive** at `~/.config/superpowers/conversation-archive/`
+- **Multi-source search** across Claude Code, OpenCode, Goose, and Memos
 
 ## Setup
 
-### 1. Install Hook (One-Time)
+### 1. Install Hook (One-Time) - Claude Code Only
 
 ```bash
 cd ~/.claude/skills/collaboration/remembering-conversations/tool
@@ -38,7 +63,7 @@ cd ~/.claude/skills/collaboration/remembering-conversations/tool
 
 Handles existing hooks gracefully (merge or replace). Runs in background after each session.
 
-### 2. Index Existing Conversations
+### 2. Index Existing Conversations - Claude Code Only
 
 ```bash
 # Index everything
@@ -48,7 +73,25 @@ Handles existing hooks gracefully (merge or replace). Runs in background after e
 ./index-conversations --cleanup
 ```
 
-## Index Modes
+### 3. Configure Memos API - Optional
+
+Ensure memos-api-mcp is configured in your OpenCode config:
+
+```bash
+# Check if configured
+cat ~/.config/opencode/opencode.json | grep memos-api-mcp
+```
+
+Configuration is loaded automatically from:
+- `~/.config/opencode/opencode.json` (per-user)
+- `/home/opencode/.config/opencode/opencode.json` (opencode user)
+
+Required environment variables in memos-api-mcp config:
+- `MEMOS_API_KEY` - Your Memos API key
+- `MEMOS_CHANNEL` - Channel identifier (default: MODELSCOPE)
+- `MEMOS_USER_ID` - Your user ID
+
+## Index Modes - Claude Code Only
 
 ```bash
 # Index all (first run or full rebuild)

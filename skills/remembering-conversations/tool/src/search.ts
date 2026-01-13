@@ -1,14 +1,18 @@
 import Database from 'better-sqlite3';
 import { initDatabase } from './db.js';
 import { initEmbeddings, generateEmbedding } from './embeddings.js';
-import { SearchResult, ConversationExchange } from './types.js';
+import { SearchResult, ConversationExchange, DataSource } from './types.js';
 import fs from 'fs';
+import { searchOpenCodeSessions } from './opencode-session-loader.js';
+import { searchGooseSessions } from './goose-session-loader.js';
+import { searchMemosMemories, MemosSearchResult } from './memos-client.js';
 
 export interface SearchOptions {
   limit?: number;
   mode?: 'vector' | 'text' | 'both';
   after?: string;  // ISO date string
   before?: string; // ISO date string
+  sources?: DataSource[];  // Filter by data sources
 }
 
 function validateISODate(dateStr: string, paramName: string): void {
@@ -26,25 +30,79 @@ function validateISODate(dateStr: string, paramName: string): void {
 export async function searchConversations(
   query: string,
   options: SearchOptions = {}
-): Promise<SearchResult[]> {
-  const { limit = 10, mode = 'vector', after, before } = options;
+): Promise<(SearchResult & { source: DataSource })[]> {
+  const { limit = 10, mode = 'vector', after, before, sources = ['all'] } = options;
 
   // Validate date parameters
   if (after) validateISODate(after, '--after');
   if (before) validateISODate(before, '--before');
 
+  const allResults: Array<SearchResult & { source: DataSource }> = [];
+
+  const sourcesToSearch = sources.includes('all')
+    ? ['claude-code', 'opencode', 'goose', 'memos'] as DataSource[]
+    : sources;
+
+  for (const source of sourcesToSearch) {
+    if (source === 'claude-code') {
+      const claudeResults = await searchClaudeCode(query, mode, limit, after, before);
+      allResults.push(...claudeResults.map(r => ({ ...r, source: 'claude-code' as const })));
+    } else if (source === 'opencode') {
+      const opencodeResults = await searchOpenCodeSessions(query, limit, after, before);
+      allResults.push(...opencodeResults.map(r => ({
+        exchange: r,
+        similarity: 1,
+        snippet: r.userMessage.substring(0, 200),
+        source: 'opencode' as const
+      })));
+    } else if (source === 'goose') {
+      const gooseResults = await searchGooseSessions(query, limit, after, before);
+      allResults.push(...gooseResults.map(r => ({
+        exchange: r,
+        similarity: 1,
+        snippet: r.userMessage.substring(0, 200),
+        source: 'goose' as const
+      })));
+    } else if (source === 'memos') {
+      const memosResults = await searchMemosMemories(query, limit, after, before);
+      allResults.push(...memosResults.map(mr => ({
+        exchange: mr.exchange,
+        similarity: mr.similarity,
+        snippet: mr.exchange.userMessage.substring(0, 200),
+        source: 'memos' as const
+      })));
+    }
+  }
+
+  const sorted = allResults
+    .sort((a, b) => {
+      if (mode === 'text') {
+        return new Date(b.exchange.timestamp).getTime() - new Date(a.exchange.timestamp).getTime();
+      }
+      return (b.similarity || 0) - (a.similarity || 0);
+    })
+    .slice(0, limit);
+
+  return sorted;
+}
+
+async function searchClaudeCode(
+  query: string,
+  mode: 'vector' | 'text' | 'both',
+  limit: number,
+  after?: string,
+  before?: string
+): Promise<SearchResult[]> {
   const db = initDatabase();
 
   let results: any[] = [];
 
-  // Build time filter clause
   const timeFilter = [];
   if (after) timeFilter.push(`e.timestamp >= '${after}'`);
   if (before) timeFilter.push(`e.timestamp <= '${before}'`);
   const timeClause = timeFilter.length > 0 ? `AND ${timeFilter.join(' AND ')}` : '';
 
   if (mode === 'vector' || mode === 'both') {
-    // Vector similarity search
     await initEmbeddings();
     const queryEmbedding = await generateEmbedding(query);
 
@@ -74,7 +132,6 @@ export async function searchConversations(
   }
 
   if (mode === 'text' || mode === 'both') {
-    // Text search
     const textStmt = db.prepare(`
       SELECT
         e.id,
@@ -96,7 +153,6 @@ export async function searchConversations(
     const textResults = textStmt.all(`%${query}%`, `%${query}%`, limit);
 
     if (mode === 'both') {
-      // Merge and deduplicate by ID
       const seenIds = new Set(results.map(r => r.id));
       for (const textResult of textResults) {
         if (!seenIds.has(textResult.id)) {
@@ -122,14 +178,12 @@ export async function searchConversations(
       lineEnd: row.line_end
     };
 
-    // Try to load summary if available
     const summaryPath = row.archive_path.replace('.jsonl', '-summary.txt');
     let summary: string | undefined;
     if (fs.existsSync(summaryPath)) {
       summary = fs.readFileSync(summaryPath, 'utf-8').trim();
     }
 
-    // Create snippet (first 200 chars)
     const snippet = exchange.userMessage.substring(0, 200) +
       (exchange.userMessage.length > 200 ? '...' : '');
 
@@ -142,7 +196,7 @@ export async function searchConversations(
   });
 }
 
-export function formatResults(results: Array<SearchResult & { summary?: string }>): string {
+export function formatResults(results: Array<(SearchResult & { summary?: string; source: DataSource })>): string {
   if (results.length === 0) {
     return 'No results found.';
   }
@@ -151,14 +205,13 @@ export function formatResults(results: Array<SearchResult & { summary?: string }
 
   results.forEach((result, index) => {
     const date = new Date(result.exchange.timestamp).toISOString().split('T')[0];
-    output += `${index + 1}. [${result.exchange.project}, ${date}]\n`;
+    const sourceLabel = result.source ? `[${result.source}] ` : '';
+    output += `${index + 1}. ${sourceLabel}[${result.exchange.project}, ${date}]\n`;
 
-    // Show conversation summary if available
     if (result.summary) {
       output += `   ${result.summary}\n\n`;
     }
 
-    // Show match with similarity percentage
     if (result.similarity !== undefined) {
       const pct = Math.round(result.similarity * 100);
       output += `   ${pct}% match: "${result.snippet}"\n`;
@@ -166,7 +219,10 @@ export function formatResults(results: Array<SearchResult & { summary?: string }
       output += `   Match: "${result.snippet}"\n`;
     }
 
-    output += `   ${result.exchange.archivePath}:${result.exchange.lineStart}-${result.exchange.lineEnd}\n\n`;
+    const location = result.exchange.archivePath.startsWith('memos://')
+      ? result.exchange.archivePath
+      : `${result.exchange.archivePath}:${result.exchange.lineStart}-${result.exchange.lineEnd}`;
+    output += `   ${location}\n\n`;
   });
 
   return output;
