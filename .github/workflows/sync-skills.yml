@@ -24,47 +24,86 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
+          echo "Git configuration:"
+          git config --global --list | grep -E "user|credential|url" || echo "No credential config found"
+          
+          # Clear any duplicate credential helper settings that might cause issues
+          git config --global --unset-all credential.helper 2>/dev/null || true
+          git config --global --unset-all http."https://github.com/".extraheader 2>/dev/null || true
+
+      - name: Add upstream remotes
+        run: |
+          echo "Adding remotes..."
+          git remote add openhands https://github.com/OpenHands/skills.git || git remote set-url openhands https://github.com/OpenHands/skills.git
+          git remote add anthropics https://github.com/anthropics/skills.git || git remote set-url anthropics https://github.com/anthropics/skills.git
+          echo "Current remotes:"
+          git remote -v
 
       - name: Fetch upstream remotes
         run: |
-          git remote add openhands https://github.com/OpenHands/skills.git
-          git remote add anthropics https://github.com/anthropics/skills.git
-          git fetch openhands main
-          git fetch anthropics main
+          echo "Fetching OpenHands/main..."
+          if ! git fetch openhands main 2>&1; then
+            echo "Failed to fetch OpenHands/main"
+            exit 1
+          fi
+          echo "Fetching anthropics/main..."
+          if ! git fetch anthropics main 2>&1; then
+            echo "Failed to fetch anthropics/main"
+            exit 1
+          fi
+          echo "Fetch successful"
 
       - name: Identify missing skills
         id: find-skills
         run: |
+          echo "=== Finding missing skills ==="
+          
           # Get current skills
+          echo "Current HEAD: $(git rev-parse HEAD)"
           CURRENT_SKILLS=$(git ls-tree -r HEAD --name-only | grep "^skills/" | cut -d'/' -f2 | sort -u)
           echo "$CURRENT_SKILLS" > /tmp/current_skills.txt
+          CURRENT_COUNT=$(echo "$CURRENT_SKILLS" | grep -c . 2>/dev/null || echo "0")
+          echo "Found $CURRENT_COUNT current skills"
           
           # Get OpenHands skills
+          echo "OpenHands/main: $(git rev-parse openhands/main)"
           OPENHANDS_SKILLS=$(git ls-tree -r openhands/main --name-only | grep "^skills/" | cut -d'/' -f2 | sort -u)
           echo "$OPENHANDS_SKILLS" > /tmp/openhands_skills.txt
+          OPENHANDS_TOTAL=$(echo "$OPENHANDS_SKILLS" | grep -c . 2>/dev/null || echo "0")
+          echo "Found $OPENHANDS_TOTAL skills in OpenHands"
           
           # Get anthropics skills
+          echo "anthropics/main: $(git rev-parse anthropics/main)"
           ANTHROPICS_SKILLS=$(git ls-tree -r anthropics/main --name-only | grep "^skills/" | cut -d'/' -f2 | sort -u)
           echo "$ANTHROPICS_SKILLS" > /tmp/anthropics_skills.txt
+          ANTHROPICS_TOTAL=$(echo "$ANTHROPICS_SKILLS" | grep -c . 2>/dev/null || echo "0")
+          echo "Found $ANTHROPICS_TOTAL skills in anthropics"
           
           # Find skills unique to OpenHands
           OPENHANDS_NEW=$(comm -13 /tmp/current_skills.txt /tmp/openhands_skills.txt | grep -v "^README.md$")
           echo "$OPENHANDS_NEW" > /tmp/openhands_new.txt
           OPENHANDS_COUNT=$(grep -c . /tmp/openhands_new.txt 2>/dev/null || echo "0")
+          echo "OpenHands skills to add: $OPENHANDS_COUNT"
+          [ "$OPENHANDS_COUNT" -gt 0 ] && cat /tmp/openhands_new.txt
           
           # Find skills unique to anthropics
           ANTHROPICS_NEW=$(comm -13 /tmp/current_skills.txt /tmp/anthropics_skills.txt | grep -v "^README.md$")
           echo "$ANTHROPICS_NEW" > /tmp/anthropics_new.txt
           ANTHROPICS_COUNT=$(grep -c . /tmp/anthropics_new.txt 2>/dev/null || echo "0")
+          echo "anthropics skills to add: $ANTHROPICS_COUNT"
+          [ "$ANTHROPICS_COUNT" -gt 0 ] && cat /tmp/anthropics_new.txt
           
           # Check if README.md needs to be added
           if ! git ls-tree -r HEAD --name-only | grep -q "^skills/README.md$"; then
             if git ls-tree -r openhands/main --name-only | grep -q "^skills/README.md$"; then
               echo "README.md" >> /tmp/openhands_new.txt
               OPENHANDS_COUNT=$((OPENHANDS_COUNT + 1))
+              echo "Will add skills/README.md from OpenHands"
             fi
           fi
           
+          echo "=== Summary ==="
+          echo "Total new skills: $((OPENHANDS_COUNT + ANTHROPICS_COUNT))"
           echo "openhands_count=$OPENHANDS_COUNT" >> $GITHUB_OUTPUT
           echo "anthropics_count=$ANTHROPICS_COUNT" >> $GITHUB_OUTPUT
           echo "total_count=$((OPENHANDS_COUNT + ANTHROPICS_COUNT))" >> $GITHUB_OUTPUT
@@ -78,6 +117,7 @@ jobs:
       - name: Create sync branch
         if: env.skip != 'true'
         run: |
+          echo "=== Creating sync branch ==="
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           BRANCH_NAME="sync-skills-$TIMESTAMP"
           COUNTER=1
@@ -86,45 +126,64 @@ jobs:
             COUNTER=$((COUNTER + 1))
           done
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_ENV
+          echo "Creating branch: $BRANCH_NAME"
           git checkout -b $BRANCH_NAME
+          echo "Current branch: $(git branch --show-current)"
 
       - name: Checkout new skills from OpenHands
         if: env.skip != 'true'
         run: |
+          echo "=== Checking out skills from OpenHands ==="
           if [ -s /tmp/openhands_new.txt ]; then
             while read -r skill; do
               if [ -n "$skill" ]; then
+                echo "Checking out: skills/$skill"
                 git checkout openhands/main -- "skills/$skill"
               fi
             done < /tmp/openhands_new.txt
+            echo "OpenHands skills checkout complete"
+          else
+            echo "No OpenHands skills to checkout"
           fi
 
       - name: Checkout new skills from anthropics
         if: env.skip != 'true'
         run: |
+          echo "=== Checking out skills from anthropics ==="
           if [ -s /tmp/anthropics_new.txt ]; then
             while read -r skill; do
               if [ -n "$skill" ]; then
                 if ! git ls-files | grep -q "skills/$skill"; then
+                  echo "Checking out: skills/$skill"
                   git checkout anthropics/main -- "skills/$skill"
+                else
+                  echo "Skipping existing: skills/$skill"
                 fi
               fi
             done < /tmp/anthropics_new.txt
+            echo "anthropics skills checkout complete"
+          else
+            echo "No anthropics skills to checkout"
           fi
 
       - name: Verify changes
         if: env.skip != 'true'
         run: |
+          echo "=== Verifying changes ==="
+          git status --short
           CHANGES=$(git status --porcelain | wc -l)
           echo "changes=$CHANGES" >> $GITHUB_ENV
           if [ "$CHANGES" -eq 0 ]; then
             echo "No changes detected after checkout. Exiting."
             echo "skip=true" >> $GITHUB_ENV
+          else
+            echo "Found $CHANGES changes to commit"
           fi
 
       - name: Create commit
         if: env.skip != 'true'
         run: |
+          echo "=== Creating commit ==="
           DATE=$(date +%Y-%m-%d)
           {
             echo "Sync skills from upstream sources - $DATE"
@@ -149,39 +208,55 @@ jobs:
           cat /tmp/commit_message.txt
           git add skills/
           git commit -F /tmp/commit_message.txt
+          echo "Commit created: $(git rev-parse --short HEAD)"
 
       - name: Push branch to remote
         if: env.skip != 'true'
         run: |
+          echo "=== Pushing branch to remote ==="
+          echo "Branch: ${{ env.branch_name }}"
+          echo "Remote: $(git remote get-url origin)"
           git push origin ${{ env.branch_name }}
+          echo "Push successful"
 
       - name: Create Pull Request
         if: env.skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |
+            console.log('=== Creating Pull Request ===');
             const fs = require('fs');
             const branchName = '${{ env.branch_name }}';
             const DATE = new Date().toISOString().split('T')[0];
+            console.log('Branch:', branchName);
+            console.log('Date:', DATE);
             
             // Read commit message for PR body
             const commitMsg = fs.readFileSync('/tmp/commit_message.txt', 'utf8');
+            console.log('Commit message loaded');
             
             // Get commit hashes
-            const openhandsCommit = '${{ steps.find-skills.outputs.openhands_count }}' > 0 ? 
+            const openhandsCount = parseInt('${{ steps.find-skills.outputs.openhands_count }}');
+            const anthropicsCount = parseInt('${{ steps.find-skills.outputs.anthropics_count }}');
+            console.log('OpenHands count:', openhandsCount);
+            console.log('anthropics count:', anthropicsCount);
+            
+            const openhandsCommit = openhandsCount > 0 ? 
               require('child_process').execSync('git rev-parse openhands/main').toString().trim().substring(0, 7) : 'N/A';
-            const anthropicsCommit = '${{ steps.find-skills.outputs.anthropics_count }}' > 0 ?
+            const anthropicsCommit = anthropicsCount > 0 ?
               require('child_process').execSync('git rev-parse anthropics/main').toString().trim().substring(0, 7) : 'N/A';
+            console.log('OpenHands commit:', openhandsCommit);
+            console.log('anthropics commit:', anthropicsCommit);
             
             // Build PR body
             let prBody = commitMsg + '\n\n---\n\n';
             prBody += '## Automated Skills Sync\n\n';
             prBody += 'This PR was automatically created by the skills sync workflow.\n\n';
             prBody += '### Sources\n';
-            if ('${{ steps.find-skills.outputs.openhands_count }}' > 0) {
+            if (openhandsCount > 0) {
               prBody += '- **OpenHands/skills**: [`' + openhandsCommit + '`](https://github.com/OpenHands/skills/commit/' + openhandsCommit + ')\n';
             }
-            if ('${{ steps.find-skills.outputs.anthropics_count }}' > 0) {
+            if (anthropicsCount > 0) {
               prBody += '- **anthropics/skills**: [`' + anthropicsCommit + '`](https://github.com/anthropics/skills/commit/' + anthropicsCommit + ')\n';
             }
             prBody += '- **Workflow Run**: [`${{ github.run_id }}`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n';
@@ -200,7 +275,10 @@ jobs:
                 color: '0066cc',
                 description: 'Automatically created'
               });
-            } catch (error) {}
+              console.log('Created/verified label: automated');
+            } catch (error) {
+              console.log('Label creation failed (may already exist):', error.message);
+            }
             
             try {
               await github.rest.issues.createLabel({
@@ -210,9 +288,13 @@ jobs:
                 color: '5319e7',
                 description: 'Skills synchronization'
               });
-            } catch (error) {}
+              console.log('Created/verified label: skills-sync');
+            } catch (error) {
+              console.log('Label creation failed (may already exist):', error.message);
+            }
             
             // Create pull request
+            console.log('Creating PR...');
             const pr = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -235,8 +317,10 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            console.log('=== Workflow failed, creating issue ===');
             const workflowRunUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const DATE = new Date().toISOString().split('T')[0];
+            console.log('Workflow run URL:', workflowRunUrl);
             
             const issueBody = '## Skills Sync Failed\n\n' +
               'The automated skills sync workflow encountered an error.\n\n' +
@@ -254,10 +338,13 @@ jobs:
               'Please investigate the workflow logs and resolve the issue.\n\n' +
               'This issue was automatically created by the GitHub Actions bot.';
             
-            await github.rest.issues.create({
+            console.log('Creating issue with title: [ERROR] Skills Sync Failed - ' + DATE);
+            const issue = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: '[ERROR] Skills Sync Failed - ' + DATE,
               body: issueBody,
               labels: ['automated', 'bug']
             });
+            
+            console.log('Created issue #' + issue.data.number);
