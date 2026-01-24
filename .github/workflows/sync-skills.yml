@@ -84,14 +84,14 @@ jobs:
           echo "$OPENHANDS_NEW" > /tmp/openhands_new.txt
           OPENHANDS_COUNT=$(grep -c . /tmp/openhands_new.txt 2>/dev/null || echo "0")
           echo "OpenHands skills to add: $OPENHANDS_COUNT"
-          [ "$OPENHANDS_COUNT" -gt 0 ] && cat /tmp/openhands_new.txt
+          [ "$OPENHANDS_COUNT" -gt 0 ] && cat /tmp/openhands_new.txt || true
           
           # Find skills unique to anthropics
           ANTHROPICS_NEW=$(comm -13 /tmp/current_skills.txt /tmp/anthropics_skills.txt | grep -v "^README.md$")
           echo "$ANTHROPICS_NEW" > /tmp/anthropics_new.txt
           ANTHROPICS_COUNT=$(grep -c . /tmp/anthropics_new.txt 2>/dev/null || echo "0")
           echo "anthropics skills to add: $ANTHROPICS_COUNT"
-          [ "$ANTHROPICS_COUNT" -gt 0 ] && cat /tmp/anthropics_new.txt
+          [ "$ANTHROPICS_COUNT" -gt 0 ] && cat /tmp/anthropics_new.txt || true
           
           # Check if README.md needs to be added
           if ! git ls-tree -r HEAD --name-only | grep -q "^skills/README.md$"; then
